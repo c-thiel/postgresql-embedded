@@ -1,65 +1,80 @@
-#![allow(dead_code)]
+use std::env;
+use std::fs;
+use std::path::Path;
 
-use anyhow::Result;
-use postgresql_archive::repository::github::repository::GitHub;
-use postgresql_archive::VersionReq;
-use postgresql_archive::{get_archive, repository};
-use std::fs::File;
-use std::io::Write;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::{env, fs};
-use url::Url;
+fn main() {
+    let out_dir = env::var_os("OUT_DIR").unwrap();
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let repo_dir = Path::new(&manifest_dir).parent().unwrap();
+    let node_dir = Path::new(&out_dir).join("node");
 
-/// Stage the PostgreSQL archive when the `bundled` feature is enabled so that
-/// it can be included in the final binary. This is useful for creating a
-/// self-contained binary that does not require the PostgreSQL archive to be
-/// downloaded at runtime.
-pub(crate) async fn stage_postgresql_archive() -> Result<()> {
-    #[cfg(feature = "theseus")]
-    let default_releases_url = postgresql_archive::configuration::theseus::URL.to_string();
-    #[cfg(not(feature = "theseus"))]
-    let default_releases_url = String::new();
-    let releases_url = env::var("POSTGRESQL_RELEASES_URL").unwrap_or(default_releases_url);
-    println!("PostgreSQL releases URL: {releases_url}");
-    let postgres_version_req = env::var("POSTGRESQL_VERSION").unwrap_or("*".to_string());
-    let version_req = VersionReq::from_str(postgres_version_req.as_str())?;
-    println!("PostgreSQL version: {postgres_version_req}");
-    println!("Target: {}", target_triple::TARGET);
+    println!("Node dir: {:?}", node_dir);
+    println!("Repo dir: {:?}", repo_dir);
+    // Copy everything from repo_dir to node_dir, we are not allowed to write anywhere else
+    fs::remove_dir_all(&node_dir).ok();
+    fs::create_dir_all(&node_dir).unwrap();
+    fs_extra::dir::copy(
+        &repo_dir,
+        &node_dir,
+        &fs_extra::dir::CopyOptions::new().content_only(true),
+    )
+    .unwrap();
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    println!("OUT_DIR: {:?}", out_dir);
+    println!("id: {:?}", std::process::Command::new("id").output());
+    println!(
+        "ls -alh /: {:?}",
+        std::process::Command::new("ls")
+            .arg("-alh")
+            .arg("/")
+            .output()
+    );
 
-    let mut archive_version_file = out_dir.clone();
-    archive_version_file.push("postgresql.version");
-    let mut archive_file = out_dir.clone();
-    archive_file.push("postgresql.tar.gz");
+    // Print value of $HOME via bash
+    println!(
+        "HOME: {:?}",
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg("echo $HOME")
+            .output()
+    );
 
-    if archive_version_file.exists() && archive_file.exists() {
-        println!("PostgreSQL archive exists: {:?}", archive_file);
-        return Ok(());
-    }
+    println!(
+        "PWD: {:?}",
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("pwd && cd {} && pwd && ls", node_dir.to_str().unwrap()))
+            .output()
+    );
 
-    register_github_repository()?;
-    let (asset_version, archive) = get_archive(&releases_url, &version_req).await?;
+    // Npm install via bash
+    println!(
+        "CI {:?}",
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("cd {} && npm ci", node_dir.to_str().unwrap()))
+            .current_dir(node_dir.clone())
+            .output()
+    );
 
-    fs::write(archive_version_file.clone(), asset_version.to_string())?;
-    let mut file = File::create(archive_file.clone())?;
-    file.write_all(&archive)?;
-    file.sync_data()?;
-    println!("PostgreSQL archive written to: {:?}", archive_file);
-
-    Ok(())
-}
-
-fn register_github_repository() -> Result<()> {
-    repository::registry::register(
-        |url| {
-            let parsed_url = Url::parse(url)?;
-            let host = parsed_url.host_str().unwrap_or_default();
-            Ok(host.ends_with("github.com"))
-        },
-        Box::new(GitHub::new),
-    )?;
-    Ok(())
+    // std::process::Command::new("npm")
+    //     .args(&["ci"])
+    //     .current_dir(node_dir.clone())
+    //     .status()
+    //     .map_err(|e| {
+    //         println!("Error: {:?}", e);
+    //         e
+    //     })
+    //     .expect("Failed to install Lakekeeper UI dependencies with npm");
+    println!(
+        "ls -alh /: {:?}",
+        std::process::Command::new("ls")
+            .arg("-alh")
+            .arg("/")
+            .output()
+    );
+    std::process::Command::new("npm")
+        .args(&["run", "build-placeholder"])
+        .current_dir(node_dir.clone())
+        .status()
+        .expect("Failed to build Lakekeeper UI with npm");
 }
